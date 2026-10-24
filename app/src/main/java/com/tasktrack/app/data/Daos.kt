@@ -14,8 +14,8 @@ interface TaskDao {
     @Query("SELECT * FROM tasks WHERE id = :id") fun observe(id: Long): Flow<TaskEntity?>
     @Query("SELECT * FROM tasks WHERE id = :id") suspend fun get(id: Long): TaskEntity?
     @Query("SELECT * FROM tasks") suspend fun getAll(): List<TaskEntity>
-    @Query("SELECT * FROM tasks WHERE parentId = :parentId ORDER BY sortOrder, createdAt") fun observeChildren(parentId: Long): Flow<List<TaskEntity>>
-    @Query("SELECT * FROM tasks WHERE parentId = :parentId ORDER BY sortOrder, createdAt") suspend fun getChildren(parentId: Long): List<TaskEntity>
+    @Query("SELECT * FROM tasks WHERE parentId = :parentId ORDER BY CASE WHEN dueAt IS NULL THEN 1 ELSE 0 END, dueAt, sortOrder, createdAt") fun observeChildren(parentId: Long): Flow<List<TaskEntity>>
+    @Query("SELECT * FROM tasks WHERE parentId = :parentId ORDER BY CASE WHEN dueAt IS NULL THEN 1 ELSE 0 END, dueAt, sortOrder, createdAt") suspend fun getChildren(parentId: Long): List<TaskEntity>
     @Insert suspend fun insert(task: TaskEntity): Long
     @Insert(onConflict = OnConflictStrategy.REPLACE) suspend fun insertAll(tasks: List<TaskEntity>)
     @Update suspend fun update(task: TaskEntity)

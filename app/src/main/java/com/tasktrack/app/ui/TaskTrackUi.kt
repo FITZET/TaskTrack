@@ -1,5 +1,6 @@
 package com.tasktrack.app.ui
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
@@ -107,6 +108,8 @@ fun TaskTrackApp(vm: MainViewModel, requestRestore: () -> Unit, saveBackup: (Str
     val tasks by vm.allTasks.collectAsStateWithLifecycle()
     val templates by vm.templates.collectAsStateWithLifecycle()
 
+    BackHandler(enabled = selectedTaskId != null) { selectedTaskId = null }
+
     MaterialTheme(colorScheme = MaterialTheme.colorScheme.copy(primary = Ink, secondary = Accent, background = Canvas, surface = Color.White)) {
         Surface(Modifier.fillMaxSize(), color = Canvas) {
             Scaffold(
@@ -184,14 +187,31 @@ private fun RankedTaskCard(meta: TaskWithMeta, onClick: () -> Unit) {
                 ImportanceDot(meta.task.importance)
                 Spacer(Modifier.width(10.dp))
                 Column(Modifier.weight(1f)) {
-                    Text(meta.task.title, fontWeight = FontWeight.SemiBold, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                    Text(meta.task.title, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, maxLines = 2, overflow = TextOverflow.Ellipsis)
                     Text("${meta.task.category.label} · ${meta.task.importance.label}", style = MaterialTheme.typography.labelMedium, color = Ink.copy(alpha = .7f))
                 }
-                meta.progress?.let { Text("$it%", fontWeight = FontWeight.Bold, color = Ink) }
+                meta.task.dueAt?.let { due ->
+                    Column(horizontalAlignment = Alignment.End) {
+                        Text("DDL", style = MaterialTheme.typography.labelMedium, color = deadlineColor(due, meta.task.reminderDays))
+                        Text(formatMonthDay(due), style = MaterialTheme.typography.headlineSmall,
+                            fontWeight = FontWeight.ExtraBold, color = deadlineColor(due, meta.task.reminderDays))
+                    }
+                }
             }
-            Spacer(Modifier.height(12.dp))
+            if (meta.nextSteps.isNotEmpty()) {
+                Spacer(Modifier.height(12.dp))
+                meta.nextSteps.forEach { step ->
+                    Text(
+                        "下一步：${step.title}${step.dueAt?.let { " · ${formatDate(it)}" } ?: " · 未设置 DDL"}",
+                        style = MaterialTheme.typography.bodyMedium,
+                        fontWeight = FontWeight.Bold,
+                        color = Danger
+                    )
+                }
+            }
+            Spacer(Modifier.height(8.dp))
+            meta.progress?.let { Text("进度 $it%", fontWeight = FontWeight.Bold, color = Ink) }
             Text(meta.reason, style = MaterialTheme.typography.bodySmall, color = if (meta.reason.contains("逾期")) Danger else Color.DarkGray)
-            meta.task.dueAt?.let { Text("DDL ${formatDate(it)} · 提前 ${meta.task.reminderDays} 天提醒", style = MaterialTheme.typography.bodySmall) }
         }
     }
 }
@@ -199,6 +219,13 @@ private fun RankedTaskCard(meta: TaskWithMeta, onClick: () -> Unit) {
 @Composable
 private fun TaskDetail(task: TaskEntity, children: List<TaskEntity>, vm: MainViewModel) {
     var addStep by remember { mutableStateOf(false) }
+    var editingDeadline by remember { mutableStateOf<TaskEntity?>(null) }
+    var showCompleted by remember { mutableStateOf(false) }
+    var showEnded by remember { mutableStateOf(false) }
+    val orderedChildren = children.sortedWith(compareBy<TaskEntity> { it.dueAt == null }.thenBy { it.dueAt ?: Long.MAX_VALUE })
+    val pending = orderedChildren.filter { it.status in setOf(TaskStatus.NOT_STARTED, TaskStatus.IN_PROGRESS) }
+    val completed = orderedChildren.filter { it.status == TaskStatus.COMPLETED }
+    val ended = orderedChildren.filter { it.status in setOf(TaskStatus.SKIPPED, TaskStatus.CANCELLED) }
     val effective = children.filter { it.status !in setOf(TaskStatus.SKIPPED, TaskStatus.CANCELLED) }
     val progress = if (effective.isEmpty()) null else effective.count { it.status == TaskStatus.COMPLETED } * 100 / effective.size
     LazyColumn(Modifier.fillMaxSize().padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -225,21 +252,39 @@ private fun TaskDetail(task: TaskEntity, children: List<TaskEntity>, vm: MainVie
         }
         item {
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                Text("流程步骤", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
+                Text("待完成步骤（${pending.size}）", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
                 OutlinedButton(onClick = { addStep = true }) { Icon(Icons.Default.Add, null); Text("临时步骤") }
             }
         }
         if (children.isEmpty()) item { EmptyState("没有步骤", "普通事项可直接更新状态，也可以添加临时步骤") }
-        items(children, key = { it.id }) { child -> StepRow(child) { vm.setStatus(child, it) } }
+        if (children.isNotEmpty() && pending.isEmpty()) item { Text("所有待办步骤均已结束", color = Color.Gray) }
+        items(pending, key = { it.id }) { child ->
+            StepRow(child, onStatus = { vm.setStatus(child, it) }, onEditDeadline = { editingDeadline = child })
+        }
+        if (completed.isNotEmpty()) {
+            item { SectionToggle("已完成步骤", completed.size, showCompleted) { showCompleted = !showCompleted } }
+            if (showCompleted) items(completed, key = { it.id }) { child ->
+                StepRow(child, onStatus = { vm.setStatus(child, it) }, onEditDeadline = { editingDeadline = child })
+            }
+        }
+        if (ended.isNotEmpty()) {
+            item { SectionToggle("已结束步骤", ended.size, showEnded) { showEnded = !showEnded } }
+            if (showEnded) items(ended, key = { it.id }) { child ->
+                StepRow(child, onStatus = { vm.setStatus(child, it) }, onEditDeadline = { editingDeadline = child })
+            }
+        }
         item { Spacer(Modifier.height(32.dp)) }
     }
-    if (addStep) SimpleTextDialog("新增临时步骤", "步骤名称", onDismiss = { addStep = false }) {
-        vm.addStep(task.id, it, task.dueAt); addStep = false
+    if (addStep) AddStepDialog(task.dueAt, onDismiss = { addStep = false }) { title, dueAt ->
+        vm.addStep(task.id, title, dueAt); addStep = false
     }
+    editingDeadline?.let { step -> StepDeadlineDialog(step, onDismiss = { editingDeadline = null }) { dueAt ->
+        vm.updateTask(step.copy(dueAt = dueAt)); editingDeadline = null
+    } }
 }
 
 @Composable
-private fun StepRow(task: TaskEntity, onStatus: (TaskStatus) -> Unit) {
+private fun StepRow(task: TaskEntity, onStatus: (TaskStatus) -> Unit, onEditDeadline: () -> Unit) {
     Card(colors = CardDefaults.cardColors(containerColor = Color.White)) {
         Row(Modifier.fillMaxWidth().padding(14.dp), verticalAlignment = Alignment.CenterVertically) {
             IconButton(onClick = { onStatus(if (task.status == TaskStatus.COMPLETED) TaskStatus.NOT_STARTED else TaskStatus.COMPLETED) }) {
@@ -248,8 +293,9 @@ private fun StepRow(task: TaskEntity, onStatus: (TaskStatus) -> Unit) {
             }
             Column(Modifier.weight(1f)) {
                 Text(task.title, fontWeight = FontWeight.Medium, color = if (task.status in setOf(TaskStatus.SKIPPED, TaskStatus.CANCELLED)) Color.Gray else Color.Unspecified)
-                Text("${task.status.label}${task.dueAt?.let { " · ${formatDate(it)}" } ?: ""}", style = MaterialTheme.typography.bodySmall)
+                Text("${task.status.label}${task.dueAt?.let { " · DDL ${formatDate(it)}" } ?: " · 未设置 DDL"}", style = MaterialTheme.typography.bodySmall)
             }
+            TextButton(onClick = onEditDeadline) { Text("改 DDL") }
             IconButton(onClick = { onStatus(TaskStatus.SKIPPED) }) { Icon(Icons.Default.SkipNext, "跳过") }
             IconButton(onClick = { onStatus(TaskStatus.CANCELLED) }) { Icon(Icons.Default.Close, "取消") }
         }
@@ -406,11 +452,62 @@ private fun AppDatePicker(initial: Long?, onDismiss: () -> Unit, onSelect: (Long
 }
 
 @Composable
-private fun SimpleTextDialog(title: String, label: String, onDismiss: () -> Unit, onSave: (String) -> Unit) {
-    var value by remember { mutableStateOf("") }
-    AlertDialog(onDismissRequest = onDismiss, title = { Text(title) }, text = { OutlinedTextField(value, { value = it }, label = { Text(label) }) },
-        confirmButton = { Button(onClick = { onSave(value) }, enabled = value.isNotBlank()) { Text("保存") } },
-        dismissButton = { TextButton(onClick = onDismiss) { Text("取消") } })
+private fun SectionToggle(title: String, count: Int, expanded: Boolean, onClick: () -> Unit) {
+    Row(
+        Modifier.fillMaxWidth().clickable(onClick = onClick).padding(vertical = 12.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Text("$title（$count）", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
+        Text(if (expanded) "收起" else "展开", color = Ink)
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun AddStepDialog(initialDueAt: Long?, onDismiss: () -> Unit, onSave: (String, Long?) -> Unit) {
+    var title by remember { mutableStateOf("") }
+    var dueAt by remember { mutableStateOf(initialDueAt) }
+    var picker by remember { mutableStateOf(false) }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("新增临时步骤") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                OutlinedTextField(title, { title = it }, label = { Text("步骤名称") }, modifier = Modifier.fillMaxWidth())
+                OutlinedButton(onClick = { picker = true }, modifier = Modifier.fillMaxWidth()) {
+                    Text(dueAt?.let { "步骤 DDL：${formatDate(it)}" } ?: "设置步骤 DDL")
+                }
+                if (dueAt != null) TextButton(onClick = { dueAt = null }, modifier = Modifier.align(Alignment.End)) { Text("清除 DDL") }
+            }
+        },
+        confirmButton = { Button(onClick = { onSave(title.trim(), dueAt) }, enabled = title.isNotBlank()) { Text("保存") } },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("取消") } }
+    )
+    if (picker) AppDatePicker(dueAt, { picker = false }) { dueAt = deadlineEndOfDay(it); picker = false }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun StepDeadlineDialog(task: TaskEntity, onDismiss: () -> Unit, onSave: (Long?) -> Unit) {
+    var picker by remember { mutableStateOf(false) }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("修改步骤 DDL") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text(task.title, fontWeight = FontWeight.Bold)
+                Text(task.dueAt?.let { "当前 DDL：${formatDate(it)}" } ?: "当前未设置 DDL")
+            }
+        },
+        confirmButton = { Button(onClick = { picker = true }) { Text("选择日期") } },
+        dismissButton = {
+            Row {
+                if (task.dueAt != null) TextButton(onClick = { onSave(null) }) { Text("清除 DDL") }
+                TextButton(onClick = onDismiss) { Text("取消") }
+            }
+        }
+    )
+    if (picker) AppDatePicker(task.dueAt, { picker = false }) { onSave(deadlineEndOfDay(it)) }
 }
 
 @Composable
@@ -432,6 +529,17 @@ private fun EmptyState(title: String, subtitle: String) {
 }
 
 private fun formatDate(epoch: Long): String = Instant.ofEpochMilli(epoch).atZone(ZoneId.systemDefault()).toLocalDate().format(DateTimeFormatter.ofPattern("yyyy-MM-dd"))
+
+private fun formatMonthDay(epoch: Long): String = Instant.ofEpochMilli(epoch).atZone(ZoneId.systemDefault()).toLocalDate().format(DateTimeFormatter.ofPattern("MM-dd"))
+
+private fun deadlineColor(epoch: Long, reminderDays: Int): Color {
+    val remaining = epoch - System.currentTimeMillis()
+    return when {
+        remaining < 0 -> Danger
+        remaining <= reminderDays.coerceAtLeast(0) * 86_400_000L -> Color(0xFFE06A20)
+        else -> Ink
+    }
+}
 
 private fun deadlineEndOfDay(selectedUtcMillis: Long): Long {
     val date = Instant.ofEpochMilli(selectedUtcMillis).atZone(ZoneId.of("UTC")).toLocalDate()

@@ -111,6 +111,7 @@ data class TaskWithMeta(
     val blocked: Boolean,
     val blocksCount: Int,
     val progress: Int?,
+    val nextSteps: List<TaskEntity>,
     val score: Int,
     val reason: String
 )

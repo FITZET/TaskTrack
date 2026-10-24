@@ -191,7 +191,9 @@ class TaskRepository(
             focusTask?.let { reasons += "下一步：${it.title}" }
             if (blocks > 0) reasons += "阻塞 $blocks 项后续任务"
             if (blocked) { score -= 180; reasons += "当前被阻塞" }
-            TaskWithMeta(task, blocked, blocks, progress, score, reasons.joinToString(" · "))
+            val nextSteps = if (children.isEmpty()) listOf(task) else executableChildren
+                .sortedWith(compareBy<TaskEntity> { it.dueAt == null }.thenBy { it.dueAt ?: Long.MAX_VALUE })
+            TaskWithMeta(task, blocked, blocks, progress, nextSteps, score, reasons.joinToString(" · "))
         }.sortedWith(compareByDescending<TaskWithMeta> { it.score }.thenBy { it.task.dueAt ?: Long.MAX_VALUE })
     }
 }
