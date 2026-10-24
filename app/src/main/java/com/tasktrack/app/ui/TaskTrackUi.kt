@@ -145,7 +145,12 @@ fun TaskTrackApp(vm: MainViewModel, requestRestore: () -> Unit, saveBackup: (Str
                     if (selected != null) {
                         TaskDetail(selected, tasks.filter { it.parentId == selected.id }, vm)
                     } else when (tab) {
-                        AppTab.TODAY -> Dashboard(ranked, onOpen = { selectedTaskId = it })
+                        AppTab.TODAY -> Dashboard(
+                            ranked,
+                            completedTasks = tasks.filter { it.parentId == null && it.status == TaskStatus.COMPLETED }
+                                .sortedByDescending { it.completedAt ?: it.updatedAt },
+                            onOpen = { selectedTaskId = it }
+                        )
                         AppTab.CALENDAR -> CalendarScreen(tasks, onOpen = { selectedTaskId = it })
                         AppTab.TEMPLATES -> TemplatesScreen(templates, vm) { selectedTaskId = it }
                         AppTab.REPORT -> ReportScreen(vm, requestRestore, saveBackup, share)
@@ -161,9 +166,11 @@ fun TaskTrackApp(vm: MainViewModel, requestRestore: () -> Unit, saveBackup: (Str
 }
 
 @Composable
-private fun Dashboard(tasks: List<TaskWithMeta>, onOpen: (Long) -> Unit) {
+private fun Dashboard(tasks: List<TaskWithMeta>, completedTasks: List<TaskEntity>, onOpen: (Long) -> Unit) {
     var category by remember { mutableStateOf<TaskCategory?>(null) }
+    var showCompleted by remember { mutableStateOf(false) }
     val visible = tasks.filter { category == null || it.task.category == category }
+    val visibleCompleted = completedTasks.filter { category == null || it.category == category }
     LazyColumn(Modifier.fillMaxSize().padding(horizontal = 16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
         item {
             Text("现在最值得做", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
@@ -175,7 +182,28 @@ private fun Dashboard(tasks: List<TaskWithMeta>, onOpen: (Long) -> Unit) {
         }
         if (visible.isEmpty()) item { EmptyState("暂时没有待处理事项", "点击右下角添加第一件事") }
         items(visible, key = { it.task.id }) { meta -> RankedTaskCard(meta) { onOpen(meta.task.id) } }
+        if (visibleCompleted.isNotEmpty()) {
+            item { SectionToggle("已完成事项", visibleCompleted.size, showCompleted) { showCompleted = !showCompleted } }
+            if (showCompleted) items(visibleCompleted, key = { it.id }) { task ->
+                CompletedTaskCard(task) { onOpen(task.id) }
+            }
+        }
         item { Spacer(Modifier.height(90.dp)) }
+    }
+}
+
+@Composable
+private fun CompletedTaskCard(task: TaskEntity, onClick: () -> Unit) {
+    Card(onClick = onClick, colors = CardDefaults.cardColors(containerColor = Color.White.copy(alpha = .78f)), shape = RoundedCornerShape(16.dp)) {
+        Row(Modifier.fillMaxWidth().padding(15.dp), verticalAlignment = Alignment.CenterVertically) {
+            Icon(Icons.Default.CheckCircle, null, tint = Ink)
+            Spacer(Modifier.width(10.dp))
+            Column(Modifier.weight(1f)) {
+                Text(task.title, fontWeight = FontWeight.Bold)
+                Text("${task.category.label} · 完成于 ${formatDate(task.completedAt ?: task.updatedAt)}", style = MaterialTheme.typography.bodySmall, color = Color.Gray)
+            }
+            Text("查看 / 召回", color = Ink, style = MaterialTheme.typography.labelLarge)
+        }
     }
 }
 
@@ -243,12 +271,21 @@ private fun TaskDetail(task: TaskEntity, children: List<TaskEntity>, vm: MainVie
         }
         item {
             Text("更新状态", fontWeight = FontWeight.Bold)
-            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                StatusButton(Icons.Default.PlayArrow, "进行中", task.status == TaskStatus.IN_PROGRESS) { vm.setStatus(task, TaskStatus.IN_PROGRESS) }
-                StatusButton(Icons.Default.CheckCircle, "完成", task.status == TaskStatus.COMPLETED) { vm.setStatus(task, TaskStatus.COMPLETED) }
-                StatusButton(Icons.Default.SkipNext, "跳过", task.status == TaskStatus.SKIPPED) { vm.setStatus(task, TaskStatus.SKIPPED) }
+            if (task.status == TaskStatus.COMPLETED) {
+                Button(onClick = { vm.setStatus(task, TaskStatus.IN_PROGRESS) }, modifier = Modifier.fillMaxWidth()) {
+                    Icon(Icons.Default.PlayArrow, null)
+                    Spacer(Modifier.width(6.dp))
+                    Text("召回事项并继续添加任务")
+                }
+                Text("也可以直接新增临时步骤，事项会自动召回。", style = MaterialTheme.typography.bodySmall, color = Color.Gray)
+            } else {
+                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    StatusButton(Icons.Default.PlayArrow, "进行中", task.status == TaskStatus.IN_PROGRESS) { vm.setStatus(task, TaskStatus.IN_PROGRESS) }
+                    StatusButton(Icons.Default.CheckCircle, "完成", task.status == TaskStatus.COMPLETED) { vm.setStatus(task, TaskStatus.COMPLETED) }
+                    StatusButton(Icons.Default.SkipNext, "跳过", task.status == TaskStatus.SKIPPED) { vm.setStatus(task, TaskStatus.SKIPPED) }
+                }
+                TextButton(onClick = { vm.setStatus(task, TaskStatus.CANCELLED) }) { Text("取消此事项", color = Danger) }
             }
-            TextButton(onClick = { vm.setStatus(task, TaskStatus.CANCELLED) }) { Text("取消此事项", color = Danger) }
         }
         item {
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {

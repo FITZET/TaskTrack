@@ -40,7 +40,7 @@ class TaskRepository(
         var adjusted = newTask.copy(updatedAt = now)
         if (old.status != newTask.status) {
             val type = when (newTask.status) {
-                TaskStatus.IN_PROGRESS -> EventType.STARTED
+                TaskStatus.IN_PROGRESS -> if (old.status == TaskStatus.COMPLETED) EventType.REOPENED else EventType.STARTED
                 TaskStatus.COMPLETED -> EventType.COMPLETED
                 TaskStatus.SKIPPED -> EventType.SKIPPED
                 TaskStatus.CANCELLED -> EventType.CANCELLED
@@ -64,6 +64,15 @@ class TaskRepository(
         val stepId = createTask(TaskEntity(title = title, category = parent.category, importance = parent.importance,
             dueAt = dueAt, reminderDays = parent.reminderDays, parentId = parentId, sortOrder = Int.MAX_VALUE))
         taskDao.addEvent(TaskEventEntity(taskId = parentId, type = EventType.STEP_ADDED, detail = "#$stepId $title"))
+        if (parent.status == TaskStatus.COMPLETED) {
+            val now = System.currentTimeMillis()
+            val recalled = parent.copy(status = TaskStatus.IN_PROGRESS, completedAt = null,
+                startedAt = parent.startedAt ?: now, updatedAt = now)
+            taskDao.update(recalled)
+            taskDao.addEvent(TaskEventEntity(taskId = parentId, type = EventType.REOPENED,
+                detail = "新增子节点后自动召回：$title"))
+            reminders.schedule(recalled)
+        }
     }
 
     suspend fun addDependency(taskId: Long, dependsOnTaskId: Long) {
